@@ -68,6 +68,7 @@ ugetpid_test()
         exit(1);
       continue;
     }
+    // 使用用户态程序ugetpid实现与getpid系统调用一样的效果
     if (getpid() != ugetpid())
       err("missmatched PID");
     exit(0);
@@ -89,6 +90,7 @@ supercheck(uint64 s)
 {
   pte_t last_pte = 0;
 
+  // 检查512个页是否都映射到了相同的PTE
   for (uint64 p = s;  p < s + 512 * PGSIZE; p += PGSIZE) {
     pte_t pte = (pte_t) pgpte((void *) p);
     if(pte == 0)
@@ -120,7 +122,7 @@ superpg_test()
   printf("superpg_test starting\n");
   testname = "superpg_test";
   
-  char *end = sbrk(N);
+  char *end = sbrk(N); // N为8M
   if (end == 0 || end == (char*)0xffffffffffffffff)
     err("sbrk failed");
   
