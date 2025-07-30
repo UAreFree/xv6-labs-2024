@@ -67,6 +67,7 @@ sys_sleep(void)
     sleep(&ticks, &tickslock);
   }
   release(&tickslock);
+  backtrace();
   return 0;
 }
 
@@ -90,4 +91,24 @@ sys_uptime(void)
   xticks = ticks;
   release(&tickslock);
   return xticks;
+}
+
+uint64
+sys_sigalarm(void) {
+  int ticks;
+  uint64 handler_addr;
+  argint(0, &ticks);
+  argaddr(1, &handler_addr);
+  myproc()->ticks = ticks;
+  myproc()->handler = (void (*)())handler_addr;
+  return 0;
+}
+
+uint64
+sys_sigreturn(void) {
+  struct proc* p = myproc();
+  // 恢复定时器中断前的寄存器 如果不恢复此时寄存器值是用户handler程序的寄存器值 原返回程序的寄存器值被覆盖所以寄
+  memmove(p->trapframe,p->atrapframe,sizeof(struct trapframe));
+  p->alarmflag = 0;
+  return p->trapframe->a0;
 }

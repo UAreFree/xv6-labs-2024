@@ -43,12 +43,12 @@ usertrap(void)
 
   // send interrupts and exceptions to kerneltrap(),
   // since we're now in the kernel.
-  w_stvec((uint64)kernelvec);
+  w_stvec((uint64)kernelvec); // 之后内核中的trap由kernelvec.S处理
 
   struct proc *p = myproc();
   
   // save user program counter.
-  p->trapframe->epc = r_sepc();
+  p->trapframe->epc = r_sepc(); // 保存sepc(保存pc)的值
   
   if(r_scause() == 8){
     // system call
@@ -73,12 +73,26 @@ usertrap(void)
     setkilled(p);
   }
 
-  if(killed(p))
+  if(killed(p)) // 检查进程是否被终止
     exit(-1);
 
-  // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2)
+  if(which_dev == 2) {
+    p->passticks ++;
+    if (p->ticks > 0 && p->passticks == p->ticks && p->alarmflag == 0) {
+      // 把定时器中断前的寄存器保存到atrpframe中
+      memmove(p->atrapframe,p->trapframe,sizeof(struct trapframe));
+      p->passticks = 0;
+      // 返回用户程序handler地址处
+      p->trapframe->epc = (uint64)p->handler;
+      // 此进程在执行handler
+      p->alarmflag = 1;
+    }
     yield();
+  }
+
+  // give up the CPU if this is a timer interrupt.
+  // if(which_dev == 2) // 如果是定时器中断 让出CPU
+  //   yield();
 
   usertrapret();
 }
