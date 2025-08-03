@@ -3,6 +3,8 @@
 #include "memlayout.h"
 #include "elf.h"
 #include "riscv.h"
+#include "spinlock.h"
+#include "proc.h"
 #include "defs.h"
 #include "fs.h"
 
@@ -14,6 +16,9 @@ pagetable_t kernel_pagetable;
 extern char etext[];  // kernel.ld sets this to end of kernel code.
 
 extern char trampoline[]; // trampoline.S
+
+extern struct spinlock refcntlock;
+extern int refcnt[(PHYSTOP - KERNBASE) / PGSIZE]; // kalloc.c
 
 // Make a direct-map page table for the kernel.
 pagetable_t
@@ -315,7 +320,7 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
+  //char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
@@ -323,20 +328,77 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
+    // 可读可写 不可读可写
+    // 可读不可写 不可读不可写
+    // 对于可写页进行COW
+    if (*pte & PTE_W) {
+      *pte = *pte & ~PTE_W;
+      *pte = *pte | PTE_COW;
+    }
+    // 把父进程的权限标志位复制到子进程
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
+    // 建立到原物理页的映射
+    if(mappages(new, i, PGSIZE, (uint64)pa, flags) != 0){
       goto err;
     }
+    // 原物理页的引用计数加一
+    acquire(&refcntlock);
+    refcnt[GETPAINDEX((uint64)pa)]++;
+    release(&refcntlock);
+
+    // if((mem = kalloc()) == 0)
+    //   goto err;
+    // memmove(mem, (char*)pa, PGSIZE);
+    // if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
+    //   kfree(mem);
+    //   goto err;
+    // }
   }
   return 0;
 
  err:
   uvmunmap(new, 0, i / PGSIZE, 1);
   return -1;
+}
+
+int
+uvmcheckcow(uint64 va) {
+  // 虚拟地址vm对应的页面是否是COW页
+  if (va >= MAXVA) return 0;
+  pte_t *pte;
+  struct proc *p = myproc();
+  if((pte = walk(p->pagetable, va, 0)) == 0)
+    return 0;
+  return va < p->sz && (*pte & PTE_V) && (*pte & PTE_COW);
+}
+
+int
+uvmcopycow(uint64 va) {
+  if (va >= MAXVA) return -1;
+  pte_t *pte;
+  uint flags;
+  uint64 pa;
+  uint64 mem;
+  struct proc *p = myproc();
+  if((pte = walk(p->pagetable, va, 0)) == 0)
+    return -1;
+  // 分配一个新的物理页面 并把原物理页面引用计数减1
+  pa = PTE2PA(*pte);
+  if ((mem = (uint64)cowalloc((void *)pa)) == 0)
+    return -1;
+  // 清除COW 设置为可写
+  flags = PTE_FLAGS(*pte);
+  if (*pte & PTE_COW) {
+    flags = flags & ~PTE_COW;
+    flags = flags | PTE_W;
+  }
+  // 解除原页面映射 会把PTE设为0
+  uvmunmap(p->pagetable, PGROUNDDOWN(va), 1, 0); // 这里不做dofree
+  // 建立新页面映射
+  if(mappages(p->pagetable, PGROUNDDOWN(va), PGSIZE, (uint64)mem, flags) != 0){
+    return -1;
+  }
+  return 0;
 }
 
 // mark a PTE invalid for user access.
@@ -361,14 +423,23 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
   uint64 n, va0, pa0;
   pte_t *pte;
 
+  // 内核态虚拟内存拷贝到用户态
+  // 其实是在像用户态内存进行写
+  // 此时不会触发缺页异常 所以要在此函数实现
+  // 判断用户页是否是COW页 如果是进行COW操作
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
     if(va0 >= MAXVA)
       return -1;
     pte = walk(pagetable, va0, 0);
     if(pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0 ||
-       (*pte & PTE_W) == 0)
+       ((*pte & PTE_W) == 0 && (*pte & PTE_COW) == 0))
       return -1;
+    if (*pte & PTE_COW) {
+      if (uvmcopycow(dstva) == -1) return -1;
+      // struct proc *p = myproc();
+      // pte = walk(p->pagetable, va0, 0);
+    }
     pa0 = PTE2PA(*pte);
     n = PGSIZE - (dstva - va0);
     if(n > len)

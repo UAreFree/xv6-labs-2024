@@ -67,7 +67,13 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else {
+  } else if ((r_scause() == 13 || r_scause() == 15) && uvmcheckcow(r_stval())) {
+    // 发生页面错误 且是COW页
+    // 进行写时复制
+    if (uvmcopycow(r_stval()) == -1)
+      setkilled(p); // 没有可用的物理内存 杀死进程
+  }
+  else {
     printf("usertrap(): unexpected scause 0x%lx pid=%d\n", r_scause(), p->pid);
     printf("            sepc=0x%lx stval=0x%lx\n", r_sepc(), r_stval());
     setkilled(p);
