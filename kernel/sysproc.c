@@ -91,3 +91,14 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+uint64
+sys_trace(void) { // 注意这里的传入参数全是void
+  // 因为使用argint内核函数来获取放到trampframe中的寄存器的值
+  // 用户程序trace有传入一个参数 int
+  int n;
+  argint(0, &n); // 提取第一个用户参数
+  struct proc *p = myproc();
+  p->mask = n;
+  return 0;
+}
