@@ -15,6 +15,7 @@
 #include "sleeplock.h"
 #include "file.h"
 #include "fcntl.h"
+#include "memlayout.h"
 
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
@@ -502,4 +503,163 @@ sys_pipe(void)
     return -1;
   }
   return 0;
+}
+
+uint64
+vmaend() {
+  // 从TRAPFRAME向下分配一片一片的vma
+  // 遍历所有已分配的vma 找最低地址作为新分配的end地址
+  struct proc *p = myproc();
+  uint64 minstart = TRAPFRAME;
+  struct vma *v = 0;
+  for (int i = 0; i < NVMA; i++) {
+    if (p->vmas[i].valid && p->vmas[i].start <= minstart) {
+      minstart = p->vmas[i].start;
+      v = &p->vmas[i];
+    }
+  }
+
+  if (v == 0) return minstart;
+  return PGROUNDDOWN(v->start);
+}
+
+uint64
+sys_mmap(void) {
+  uint64 addr;
+  int length; // 长度
+  int prot;   // 权限
+  int flags;  // 类型
+  int fd;     // 文件
+  int offset; // 偏移量
+
+  struct file* file;
+  argaddr(0, &addr);
+  argint(1, &length);
+  argint(2, &prot);
+  argint(3, &flags);
+  argfd(4, &fd, &file);
+  argint(5, &offset);
+  if (addr < 0 || length < 0 || prot < 0 || flags < 0 || fd < 0 || offset < 0) {
+    return -1;
+  }
+
+  // 如果是 MAP_SHARED 文件必须可写
+  if (flags & MAP_SHARED && prot & PROT_WRITE && !file->writable) {
+    return -1;
+  }
+
+  // 找一个未被映射的VMA
+  struct vma *v = 0;
+  struct proc *p = myproc();
+  for (int i = 0; i < NVMA; i++) {
+    if (p->vmas[i].valid == 0) {
+      // 未被映射的VMA
+      v = &p->vmas[i];
+      break;
+    }
+  }
+  if (v == 0) return -1;
+
+  // 找一片区域给vma
+  uint64 end = vmaend();
+  // 初始化vma
+  v->valid = 1;
+  v->start = end - length;
+  v->end = end;
+  v->length = length;
+  v->prot = prot;
+  v->flags = flags;
+  v->fd = fd;
+  v->file = file;
+  v->offset = offset;
+
+  // 增加文件的引用计数
+  filedup(file);
+
+  return v->start;
+}
+
+int
+writeback(pagetable_t pgtbl, uint64 va, int length, struct vma* v) {
+
+  pte_t* pte;
+  uint64 addr;
+  // 遍历vma区域页面
+  for (addr = PGROUNDDOWN(va); addr < PGROUNDDOWN(va+length); addr += PGSIZE) {
+    // 获取对应PTE
+    if ((pte = walk(pgtbl, addr, 0)) == 0) {
+      return -1;
+    }
+    if (va - v->start > v->file->ip->size) break;
+    // 未分配物理页
+    if (!(*pte & PTE_V)) continue;
+    // 如果是MAP_SHARED 且可写 要写回文件
+    // hint说明可以不考虑PTE_D
+    if (v->flags & MAP_SHARED && v->prot & PROT_WRITE) {
+      begin_op();
+      ilock(v->file->ip);
+      uint offset = v->offset + addr - v->start;
+      // 写入不能超过原文件大小
+      uint size = v->file->ip->size - offset;
+      if (size > PGSIZE) size = PGSIZE;
+      writei(v->file->ip, 1, addr, offset, size);
+      iunlock(v->file->ip);
+      end_op();
+    }
+    // 释放物理页及映射
+    kfree((void*)PTE2PA(*pte));
+    *pte = 0;
+  }
+  return 0;
+}
+
+uint64
+munmap(uint64 addr, int length) {
+
+  struct proc *p = myproc();
+  struct vma *v = 0;
+  // 找对应的vma区域
+  for (int i = 0; i < NVMA; i++) {
+    if (p->vmas[i].valid && p->vmas[i].start <= addr && addr < p->vmas[i].end) {
+      v = &p->vmas[i];
+      break;
+    }
+  }
+  if (v == 0) {
+    return -1;
+  }
+
+  // unmap并写回文件
+  if (writeback(p->pagetable, addr, length, v) != 0) {
+    return -1;
+  }
+
+  if (addr == v->start) { // 从start释放
+    v->start += length;
+    v->offset += length; // 注意 文件也要对应偏移 否则部分释放有问题
+  }else if (addr == v->end - length) { // 释放到end
+    v->end = addr;
+  }
+  v->length -= length;
+
+  // 减少file引用计数
+  if (v->length <= 0) {
+    fileclose(v->file);
+    v->valid = 0;
+  }
+  return 0;
+}
+
+uint64
+sys_munmap(void) {
+  uint64 addr;
+  int length;
+
+  argaddr(0, &addr);
+  argint(1, &length);
+  if (addr < 0 || length < 0) {
+    return -1;
+  }
+
+  return munmap(addr, length);
 }

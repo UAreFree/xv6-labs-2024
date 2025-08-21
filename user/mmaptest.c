@@ -179,10 +179,16 @@ mmap_test(void)
   for (i = PGSIZE; i < PGSIZE*2; i++)
     p[i] = 'C';
 
+  // C
+  // C
+  // B
   // unmap just the first two of three pages of mapped memory.
   if (munmap(p, PGSIZE*2) == -1)
     err("munmap (3)");
 
+  // C
+  // 0
+  // 0
   printf("test mmap read/write: OK\n");
 
   printf("test mmap dirty\n");
@@ -340,6 +346,7 @@ fork_test(void)
     exit(1);
   }
 
+  // 子进程munmap了第一页 父进程依旧存在
   // check that the parent's mappings are still there.
   _v1(p1);
   _v1(p2);
@@ -392,7 +399,8 @@ more_test()
       err("munmap");
     // this should cause a fatal fault
     printf("*p = %x\n", *p);
-    exit(0);
+    exit(0); // 这里munmap的应该是第二页 但是却写入的是第一页 说明 offset错了
+    // 在部分释放 - 部分释放后出现的问题
   }
   st = 0;
   wait(&st);

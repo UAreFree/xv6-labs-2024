@@ -288,6 +288,13 @@ fork(void)
     return -1;
   }
 
+  for (int i = 0; i < NVMA; i++) {
+    if (p->vmas[i].valid) {
+      np->vmas[i] = p->vmas[i];
+      filedup(p->vmas[i].file);
+    }
+  }
+
   // Copy user memory from parent to child.
   if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
     freeproc(np);
@@ -350,6 +357,15 @@ exit(int status)
 
   if(p == initproc)
     panic("init exiting");
+
+  // 释放vma映射
+  for (int i = 0; i < NVMA; i++) {
+    if (p->vmas[i].valid) {
+      if (munmap(p->vmas[i].start, p->vmas[i].length) != 0) {
+        panic("exit munmap");
+      }
+    }
+  }
 
   // Close all open files.
   for(int fd = 0; fd < NOFILE; fd++){
