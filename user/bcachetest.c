@@ -30,7 +30,7 @@ createfile(char *file, int nblock)
   int fd;
   char buf[BSIZE];
   int i;
-  
+
   fd = open(file, O_CREATE | O_RDWR);
   if(fd < 0){
     printf("createfile %s failed\n", file);
@@ -132,16 +132,16 @@ test0()
       exit(0);
     }
   }
-  
+
   int status = 0;
   for(int i = 0; i < NCHILD; i++){
     wait(&status);
     if (status != 0) {
       printf("FAIL: a child failed\n");
       exit(1);
-    }  
+    }
   }
-  
+
   printf("test0 results:\n");
   n = ntas(1);
   if (n-m < 500)
@@ -155,7 +155,7 @@ void test1()
 {
   char file[3];
   enum { N = 200, BIG=100, NCHILD=2 };
-  
+
   printf("start test1\n");
   file[0] = 'B';
   file[2] = '\0';
@@ -198,7 +198,7 @@ void test1()
     if (status != 0) {
       printf("FAIL: a child failed\n");
       exit(1);
-    }  
+    }
   }
 
   printf("\ntest1 OK\n");
@@ -214,7 +214,7 @@ test2()
   char file[16];
 
   printf("start test2\n");
-  
+
   mkdir("d2");
 
   file[0] = 'd';
@@ -340,7 +340,7 @@ test3()
   char file[16];
 
   printf("start test3\n");
-  
+
   mkdir("d2");
 
   file[0] = 'd';
